@@ -12,10 +12,13 @@ import android.util.Base64;
 import android.content.Context;
 import android.support.annotation.Nullable;
 import android.util.SparseArray;
+import android.content.res.AssetFileDescriptor;
+import android.content.res.AssetManager;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.BufferedInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -106,6 +109,36 @@ public class RNFSManager extends ReactContextBaseJavaModule {
   }
 
   @ReactMethod
+  public void readFileAssets(String filepath, Callback callback) {
+    InputStream stream = null;
+    try {
+      // ensure isn't a directory
+      AssetManager assetManager = getReactApplicationContext().getAssets();
+      stream = assetManager.open(filepath, 0);
+      if (stream == null) {
+        callback.invoke(makeErrorPayload(new Exception("Failed to open file")));
+        return;
+      }
+
+      byte[] buffer = new byte[stream.available()];
+      stream.read(buffer);
+      String base64Content = Base64.encodeToString(buffer, Base64.NO_WRAP);
+
+      callback.invoke(null, base64Content);
+    } catch (Exception ex) {
+      ex.printStackTrace();
+      callback.invoke(makeErrorPayload(ex));
+    } finally {
+      if (stream != null) {
+        try {
+          stream.close();
+        } catch (IOException ignored) {
+        }
+      }
+    }
+  }
+
+  @ReactMethod
   public void moveFile(String filepath, String destPath, Callback callback) {
     try {
       File from = new File(filepath);
@@ -146,6 +179,100 @@ public class RNFSManager extends ReactContextBaseJavaModule {
     } catch (Exception ex) {
       ex.printStackTrace();
       callback.invoke(makeErrorPayload(ex));
+    }
+  }
+
+  @ReactMethod
+  public void readDirAssets(String directory, Callback callback) {
+    try {
+      AssetManager assetManager = getReactApplicationContext().getAssets();
+      String[] list = assetManager.list(directory);
+
+      WritableArray fileMaps = Arguments.createArray();
+      for (String childFile : list) {
+        WritableMap fileMap = Arguments.createMap();
+
+        fileMap.putString("name", childFile);
+        String path = directory.isEmpty() ? childFile : String.format("%s/%s", directory, childFile); // don't allow / at the start when directory is ""
+        fileMap.putString("path", path);
+        int length = 0;
+        boolean isDirectory = false;
+        try {
+          AssetFileDescriptor assetFileDescriptor = assetManager.openFd(path);
+          if (assetFileDescriptor != null) {
+            length = (int) assetFileDescriptor.getLength();
+            assetFileDescriptor.close();
+          }
+        } catch (IOException ex) {
+          //.. ah.. is a directory!
+          isDirectory = true;
+        }
+        fileMap.putInt("size", length);
+        fileMap.putInt("type", isDirectory ? 1 : 0); // if 0, probably a folder..
+
+        fileMaps.pushMap(fileMap);
+      }
+      callback.invoke(null, fileMaps);
+
+    } catch (IOException e) {
+      e.printStackTrace();
+      callback.invoke(makeErrorPayload(e));
+    }
+  }
+
+  @ReactMethod
+  public void copyFileAssets(String assetPath, String destination, Callback callback) {
+    AssetManager assetManager = getReactApplicationContext().getAssets();
+
+    InputStream in = null;
+    OutputStream out = null;
+    try {
+      try {
+        in = assetManager.open(assetPath);
+      } catch (IOException e) {
+        // Default error message is just asset name, so make a more helpful error here.
+        callback.invoke(makeErrorPayload(new Exception(String.format("Asset '%s' could not be opened", assetPath))));
+        return;
+      }
+
+      File outFile = new File(destination);
+      try {
+        out = new FileOutputStream(outFile);
+      } catch (FileNotFoundException e) {
+        callback.invoke(makeErrorPayload(e));
+        return;
+      }
+
+      try {
+        copyFile(in, out);
+      } catch (IOException e) {
+        callback.invoke(makeErrorPayload(new Exception(String.format("Failed to copy '%s' to %s (%s)", assetPath, destination, e.getLocalizedMessage()))));
+      }
+
+      // Success!
+      callback.invoke();
+
+    } finally {
+      if (in != null) {
+        try {
+          in.close();
+        } catch (IOException ignored) {
+        }
+      }
+      if (out != null) {
+        try {
+          out.close();
+        } catch (IOException ignored) {
+        }
+      }
+    }
+  }
+
+  private void copyFile(InputStream in, OutputStream out) throws IOException {
+    byte[] buffer = new byte[1024*10]; // 10k buffer
+    int read;
+    while((read = in.read(buffer)) != -1){
+      out.write(buffer, 0, read);
     }
   }
 
